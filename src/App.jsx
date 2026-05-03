@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MoonStar } from 'lucide-react'
 import {
   addEdge,
-  Background,
-  Controls,
-  MiniMap,
-  ReactFlow,
+  applyEdgeChanges,
+  applyNodeChanges,
   useEdgesState,
   useNodesState,
 } from 'reactflow'
-import BranchNode from './components/BranchNode'
-import DialogueNode from './components/DialogueNode'
-import GroupNode from './components/GroupNode'
-import LogicNode from './components/LogicNode'
+import { useMutation, useStorage } from '@liveblocks/react/suspense'
+import EditorLayout from './EditorLayout.jsx'
 import {
   getAbsoluteTopLeft,
   resolveGroupReparent,
@@ -30,14 +25,16 @@ import {
   renameProject,
   switchActiveProject,
 } from './projectStorage'
-import 'reactflow/dist/style.css'
+import {
+  liveMapToEdges,
+  liveMapToSortedNodes,
+  storageRecordToEdges,
+  storageRecordToNodes,
+  syncEdgesLiveMap,
+  syncNodesLiveMap,
+} from './liveblocksFlow'
 
-const nodeTypes = {
-  dialogue: DialogueNode,
-  logic: LogicNode,
-  branch: BranchNode,
-  group: GroupNode,
-}
+const COLLAB_ENABLED = Boolean(import.meta.env.VITE_LIVEBLOCKS_PUBLIC_KEY?.trim())
 
 function randomId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`
@@ -86,10 +83,17 @@ function isEditableElement(target) {
   return tag === 'input' || tag === 'textarea' || tag === 'select'
 }
 
-function App() {
-  const [boot] = useState(() => getBootState())
-  const [nodes, setNodes, onNodesChange] = useNodesState(boot.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState(boot.edges)
+function EditorBody({
+  boot,
+  nodes,
+  edges,
+  setNodes,
+  setEdges,
+  onNodesChange,
+  onEdgesChange,
+  persistOnGraphChange,
+  promptBeforeProjectSwitch,
+}) {
   const [activeProjectId, setActiveProjectId] = useState(boot.activeProjectId)
   const [projectList, setProjectList] = useState(boot.projectList)
   const [selectedNodeId, setSelectedNodeId] = useState(null)
@@ -113,10 +117,12 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!persistOnGraphChange) return
     const store = loadProjectsStore()
     persistActiveProjectGraph(store, activeProjectId, nodes, edges)
-    setProjectList(projectSummaries(store))
-  }, [nodes, edges, activeProjectId])
+    // 프로젝트 메타(updatedAt·정렬)를 타이틀 드롭다운과 맞추기 위해 동기 갱신
+    setProjectList(projectSummaries(store)) // eslint-disable-line react-hooks/set-state-in-effect -- 로컬 스토어 미러링
+  }, [nodes, edges, activeProjectId, persistOnGraphChange])
 
   useEffect(() => {
     if (isRestoringRef.current) {
@@ -171,13 +177,13 @@ function App() {
         (edge) => !deleting.has(edge.source) && !deleting.has(edge.target),
       ),
     )
-  }, [])
+  }, [setEdges, setNodes])
 
   const deleteEdgesByIds = useCallback((edgeIds) => {
     if (!edgeIds.length) return
     const deleting = new Set(edgeIds)
     setEdges((current) => current.filter((edge) => !deleting.has(edge.id)))
-  }, [])
+  }, [setEdges])
 
   const deleteSelected = useCallback(() => {
     const selectedNodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
@@ -287,7 +293,7 @@ function App() {
   const handleNodeDragStop = useCallback((_, node) => {
     if (node.type === 'group') return
     setNodes((current) => resolveGroupReparent(current, node.id))
-  }, [])
+  }, [setNodes])
 
   const onConnect = useCallback(
     (connection) => {
@@ -379,7 +385,7 @@ function App() {
         node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node,
       ),
     )
-  }, [])
+  }, [setNodes])
 
   const addInspectorRow = useCallback((nodeId, listKey, seed) => {
     setNodes((current) =>
@@ -394,7 +400,7 @@ function App() {
         }
       }),
     )
-  }, [])
+  }, [setNodes])
 
   const updateInspectorRow = useCallback((nodeId, listKey, rowId, field, value) => {
     setNodes((current) =>
@@ -406,7 +412,7 @@ function App() {
         return { ...node, data: { ...node.data, [listKey]: next } }
       }),
     )
-  }, [])
+  }, [setNodes])
 
   const removeInspectorRow = useCallback((nodeId, listKey, rowId) => {
     setNodes((current) =>
@@ -416,7 +422,7 @@ function App() {
         return { ...node, data: { ...node.data, [listKey]: next } }
       }),
     )
-  }, [])
+  }, [setNodes])
 
   const currentProjectName = useMemo(
     () => projectList.find((p) => p.id === activeProjectId)?.name ?? '',
@@ -426,6 +432,14 @@ function App() {
   const switchToProject = useCallback(
     (newId) => {
       if (newId === activeProjectId) return
+      if (
+        promptBeforeProjectSwitch &&
+        !window.confirm(
+          '공유 캔버스가 선택한 로컬 프로젝트 내용으로 바뀝니다. 다른 사용자에게도 동일하게 적용됩니다. 계속할까요?',
+        )
+      ) {
+        return
+      }
       const store = loadProjectsStore()
       const p = switchActiveProject(store, activeProjectId, newId, nodes, edges)
       if (!p) return
@@ -437,7 +451,7 @@ function App() {
       setNodes(p.nodes)
       setEdges(p.edges)
     },
-    [activeProjectId, edges, nodes],
+    [activeProjectId, edges, nodes, promptBeforeProjectSwitch, setEdges, setNodes],
   )
 
   const handleNewProject = useCallback(() => {
@@ -459,7 +473,7 @@ function App() {
     setNodes(p.nodes)
     setEdges(p.edges)
     showToast('새 프로젝트를 만들었습니다.')
-  }, [activeProjectId, edges, nodes, projectList.length, showToast])
+  }, [activeProjectId, edges, nodes, projectList.length, setEdges, setNodes, showToast])
 
   const handleRenameProject = useCallback(() => {
     const current =
@@ -490,7 +504,7 @@ function App() {
     setNodes(p.nodes)
     setEdges(p.edges)
     showToast('프로젝트를 복사했습니다.')
-  }, [activeProjectId, edges, nodes, showToast])
+  }, [activeProjectId, edges, nodes, setEdges, setNodes, showToast])
 
   const handleDeleteProject = useCallback(() => {
     if (!window.confirm('이 프로젝트를 삭제할까요? 저장된 내용은 복구할 수 없습니다.')) {
@@ -516,7 +530,7 @@ function App() {
     setNodes(p.nodes)
     setEdges(p.edges)
     showToast('프로젝트를 삭제했습니다.')
-  }, [activeProjectId, edges, nodes, showToast])
+  }, [activeProjectId, edges, nodes, setEdges, setNodes, showToast])
 
   const downloadJson = useCallback(() => {
     const outputMap = edges.reduce((acc, edge) => {
@@ -612,451 +626,149 @@ function App() {
   }, [edges, nodes])
 
   return (
-    <div className="editor-shell">
-      <div className="editor-title">
-        <MoonStar size={16} />
-        <div className="editor-title__text">
-          <span>Universal Narrative Node Editor</span>
-          <small className="editor-title__project">{currentProjectName}</small>
-        </div>
-      </div>
-
-      <div className="editor-project-bar">
-        <span className="editor-project-bar__label">프로젝트</span>
-        <select
-          className="editor-project-bar__select"
-          value={activeProjectId}
-          onChange={(event) => switchToProject(event.target.value)}
-          title="불러올 프로젝트 선택"
-        >
-          {projectList.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={handleNewProject}>
-          새 프로젝트
-        </button>
-        <button type="button" onClick={handleRenameProject}>
-          이름 바꾸기
-        </button>
-        <button type="button" onClick={handleDuplicateProject}>
-          복사해서 저장
-        </button>
-        <button
-          type="button"
-          className="editor-project-bar__danger"
-          onClick={handleDeleteProject}
-        >
-          프로젝트 삭제
-        </button>
-      </div>
-
-      <div className="editor-toolbar">
-        <button type="button" onClick={() => addNodeByType('dialogue')}>
-          + Dialogue
-        </button>
-        <button type="button" onClick={() => addNodeByType('logic')}>
-          + Logic
-        </button>
-        <button type="button" onClick={() => addNodeByType('branch')}>
-          + Branch
-        </button>
-        <button type="button" onClick={() => addNodeByType('group')}>
-          + Group
-        </button>
-        <button
-          type="button"
-          className={quickConnectMode ? 'editor-toolbar__active' : ''}
-          onClick={() => {
-            setQuickConnectMode((prev) => !prev)
-            setQuickConnectSourceId(null)
-          }}
-        >
-          {quickConnectMode ? '연결 모드 ON' : '연결 쉽게 하기'}
-        </button>
-        {quickConnectMode && (
-          <select
-            value={branchConnectPath}
-            onChange={(event) => setBranchConnectPath(event.target.value)}
-            title="Branch 노드 출구 선택"
-          >
-            <option value="true">Branch True로 연결</option>
-            <option value="false">Branch False로 연결</option>
-          </select>
-        )}
-        <button type="button" onClick={deleteSelected}>
-          선택 삭제
-        </button>
-        {quickConnectMode && (
-          <span className="editor-toolbar__hint">
-            {quickConnectSourceId
-              ? `출발 노드: ${quickConnectSourceId} (다음 노드 클릭으로 연결)`
-              : '출발 노드를 먼저 클릭하세요'}
-          </span>
-        )}
-        <button
-          type="button"
-          className="editor-toolbar__download"
-          onClick={downloadJson}
-        >
-          JSON 다운로드
-        </button>
-      </div>
-
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodeDragStop={handleNodeDragStop}
-        onNodeClick={(event, node) => {
-          if (!quickConnectMode) return
-          event.preventDefault()
-          if (!quickConnectSourceId) {
-            setQuickConnectSourceId(node.id)
-            return
-          }
-
-          quickConnectNodes(quickConnectSourceId, node.id)
+    <EditorLayout
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      onConnect={onConnect}
+      onNodeDragStop={handleNodeDragStop}
+      onNodeClick={(event, node) => {
+        if (!quickConnectMode) return
+        event.preventDefault()
+        if (!quickConnectSourceId) {
           setQuickConnectSourceId(node.id)
-        }}
-        onSelectionChange={({ nodes: selectedNodes }) => {
-          setSelectedNodeId(selectedNodes[0]?.id ?? null)
-        }}
-        onNodeContextMenu={(event, node) => {
-          event.preventDefault()
-          event.stopPropagation()
-          setContextMenu({
-            type: 'node',
-            nodeId: node.id,
-            x: event.clientX,
-            y: event.clientY,
-          })
-        }}
-        onEdgeContextMenu={(event, edge) => {
-          event.preventDefault()
-          event.stopPropagation()
-          setContextMenu({
-            type: 'edge',
-            edgeId: edge.id,
-            x: event.clientX,
-            y: event.clientY,
-          })
-        }}
-        onPaneClick={() => {
-          setContextMenu(null)
-          setSelectedNodeId(null)
-        }}
-        fitView
-        minZoom={0.3}
-        maxZoom={1.8}
-        colorMode="dark"
-        defaultEdgeOptions={{
-          animated: true,
-          style: { stroke: '#7b61ff', strokeWidth: 2 },
-        }}
-      >
-        <Background color="#2f2a45" gap={24} size={1} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={(node) =>
-            node.type === 'group'
-              ? '#5c6b8a'
-              : node.type === 'branch'
-                ? '#c66bff'
-                : node.type === 'logic'
-                  ? '#6bb5ff'
-                  : '#6a5acd'
-          }
-          maskColor="rgba(5, 3, 12, 0.65)"
-          style={{ backgroundColor: '#0d0b16', border: '1px solid #30294d' }}
-        />
-        <Controls
-          style={{ backgroundColor: '#0d0b16', border: '1px solid #30294d' }}
-        />
-      </ReactFlow>
+          return
+        }
 
-      <aside className={`inspector-panel ${selectedNode ? 'is-open' : ''}`}>
-        <h3>Inspector</h3>
-        {!selectedNode && (
-          <p className="inspector-empty">
-            노드를 선택하면 상세 속성을 편집할 수 있습니다.
-          </p>
-        )}
-        {selectedNode && (
-          <div className="inspector-section">
-            <div className="inspector-meta">
-              <span>{selectedNode.type.toUpperCase()}</span>
-              <small>{selectedNode.id}</small>
-            </div>
-            <button
-              type="button"
-              className="inspector-delete-button"
-              onClick={() => {
-                deleteNodesByIds([selectedNode.id])
-                setSelectedNodeId(null)
-              }}
-            >
-              이 노드 삭제
-            </button>
-
-            {selectedNode.type === 'group' && (
-              <>
-                <label>그룹 이름 (Scene / Chapter)</label>
-                <input
-                  value={selectedNode.data.label ?? ''}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, { label: event.target.value })
-                  }
-                  placeholder="예: Scene 1 — 연구소"
-                />
-                <p className="inspector-hint">
-                  다른 노드를 박스 안으로 드래그하면 이 그룹에 속합니다. 그룹을
-                  움직이면 안의 노드도 함께 이동합니다. 우측 하단 핸들로 크기를
-                  조절하세요.
-                </p>
-              </>
-            )}
-
-            {selectedNode.type === 'dialogue' && (
-              <>
-                <label>Character</label>
-                <input
-                  value={selectedNode.data.character ?? ''}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, { character: event.target.value })
-                  }
-                />
-                <label>Text</label>
-                <textarea
-                  rows={6}
-                  value={selectedNode.data.text ?? ''}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, { text: event.target.value })
-                  }
-                />
-
-                <div className="inspector-subtitle">Custom Properties</div>
-                {(selectedNode.data.customProperties ?? []).map((property) => (
-                  <div key={property.id} className="inspector-row">
-                    <input
-                      value={property.key ?? ''}
-                      placeholder="Key"
-                      onChange={(event) =>
-                        updateInspectorRow(
-                          selectedNode.id,
-                          'customProperties',
-                          property.id,
-                          'key',
-                          event.target.value,
-                        )
-                      }
-                    />
-                    <input
-                      value={property.value ?? ''}
-                      placeholder="Value"
-                      onChange={(event) =>
-                        updateInspectorRow(
-                          selectedNode.id,
-                          'customProperties',
-                          property.id,
-                          'value',
-                          event.target.value,
-                        )
-                      }
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        removeInspectorRow(
-                          selectedNode.id,
-                          'customProperties',
-                          property.id,
-                        )
-                      }
-                    >
-                      삭제
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    addInspectorRow(selectedNode.id, 'customProperties', {
-                      key: '',
-                      value: '',
-                    })
-                  }
-                >
-                  + 커스텀 속성 추가
-                </button>
-              </>
-            )}
-
-            {selectedNode.type === 'logic' && (
-              <>
-                <div className="inspector-subtitle">Operations</div>
-                {(selectedNode.data.operations ?? []).map((operation) => (
-                  <div key={operation.id} className="inspector-row inspector-row--triple">
-                    <input
-                      value={operation.variable ?? ''}
-                      placeholder="변수명"
-                      onChange={(event) =>
-                        updateInspectorRow(
-                          selectedNode.id,
-                          'operations',
-                          operation.id,
-                          'variable',
-                          event.target.value,
-                        )
-                      }
-                    />
-                    <select
-                      value={operation.operator ?? '='}
-                      onChange={(event) =>
-                        updateInspectorRow(
-                          selectedNode.id,
-                          'operations',
-                          operation.id,
-                          'operator',
-                          event.target.value,
-                        )
-                      }
-                    >
-                      <option value="=">=</option>
-                      <option value="+=">+=</option>
-                      <option value="-=">-=</option>
-                    </select>
-                    <input
-                      value={operation.value ?? ''}
-                      placeholder="값"
-                      onChange={(event) =>
-                        updateInspectorRow(
-                          selectedNode.id,
-                          'operations',
-                          operation.id,
-                          'value',
-                          event.target.value,
-                        )
-                      }
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        removeInspectorRow(selectedNode.id, 'operations', operation.id)
-                      }
-                    >
-                      삭제
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    addInspectorRow(selectedNode.id, 'operations', {
-                      variable: '',
-                      operator: '=',
-                      value: '',
-                    })
-                  }
-                >
-                  + 변수 연산 추가
-                </button>
-              </>
-            )}
-
-            {selectedNode.type === 'branch' && (
-              <>
-                <label>Variable</label>
-                <input
-                  value={selectedNode.data.condition?.variable ?? ''}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, {
-                      condition: {
-                        ...(selectedNode.data.condition ?? {}),
-                        variable: event.target.value,
-                      },
-                    })
-                  }
-                />
-                <label>Operator</label>
-                <select
-                  value={selectedNode.data.condition?.operator ?? '=='}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, {
-                      condition: {
-                        ...(selectedNode.data.condition ?? {}),
-                        operator: event.target.value,
-                      },
-                    })
-                  }
-                >
-                  <option value="==">==</option>
-                  <option value="!=">!=</option>
-                  <option value=">=">{'>='}</option>
-                  <option value="<=">{'<='}</option>
-                </select>
-                <label>Value</label>
-                <input
-                  value={selectedNode.data.condition?.value ?? ''}
-                  onChange={(event) =>
-                    mergeNodeData(selectedNode.id, {
-                      condition: {
-                        ...(selectedNode.data.condition ?? {}),
-                        value: event.target.value,
-                      },
-                    })
-                  }
-                />
-              </>
-            )}
-          </div>
-        )}
-      </aside>
-
-      {contextMenu && (
-        <div
-          className="editor-context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          {contextMenu.type === 'edge' ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                deleteEdgesByIds([contextMenu.edgeId])
-                setContextMenu(null)
-              }}
-            >
-              연결선 삭제
-            </button>
-          ) : (
-            <>
-              <div className="editor-context-menu__hint">
-                노드 삭제는 실수 방지를 위해 Inspector/선택 삭제에서 진행하세요.
-              </div>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  setSelectedNodeId(contextMenu.nodeId)
-                  setContextMenu(null)
-                }}
-              >
-                Inspector에서 편집
-              </button>
-            </>
-          )}
-        </div>
-      )}
-      {toast && <div className="editor-toast">{toast}</div>}
-    </div>
+        quickConnectNodes(quickConnectSourceId, node.id)
+        setQuickConnectSourceId(node.id)
+      }}
+      onSelectionChange={({ nodes: selectedNodes }) => {
+        setSelectedNodeId(selectedNodes[0]?.id ?? null)
+      }}
+      currentProjectName={currentProjectName}
+      projectList={projectList}
+      activeProjectId={activeProjectId}
+      onSwitchProject={switchToProject}
+      onNewProject={handleNewProject}
+      onRenameProject={handleRenameProject}
+      onDuplicateProject={handleDuplicateProject}
+      onDeleteProject={handleDeleteProject}
+      addNodeByType={addNodeByType}
+      quickConnectMode={quickConnectMode}
+      setQuickConnectMode={setQuickConnectMode}
+      branchConnectPath={branchConnectPath}
+      setBranchConnectPath={setBranchConnectPath}
+      quickConnectSourceId={quickConnectSourceId}
+      setQuickConnectSourceId={setQuickConnectSourceId}
+      deleteSelected={deleteSelected}
+      downloadJson={downloadJson}
+      selectedNode={selectedNode}
+      mergeNodeData={mergeNodeData}
+      addInspectorRow={addInspectorRow}
+      updateInspectorRow={updateInspectorRow}
+      removeInspectorRow={removeInspectorRow}
+      deleteNodesByIds={deleteNodesByIds}
+      deleteEdgesByIds={deleteEdgesByIds}
+      setSelectedNodeId={setSelectedNodeId}
+      contextMenu={contextMenu}
+      setContextMenu={setContextMenu}
+      toast={toast}
+    />
   )
 }
 
-export default App
+function LocalEditorApp() {
+  const [boot] = useState(() => getBootState())
+  const [nodes, setNodes, onNodesChange] = useNodesState(boot.nodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState(boot.edges)
+  return (
+    <EditorBody
+      boot={boot}
+      nodes={nodes}
+      edges={edges}
+      setNodes={setNodes}
+      setEdges={setEdges}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      persistOnGraphChange
+      promptBeforeProjectSwitch={false}
+    />
+  )
+}
+
+function CollabEditorApp() {
+  const [boot] = useState(() => getBootState())
+  const nodesRecord = useStorage((root) => root.nodes)
+  const edgesRecord = useStorage((root) => root.edges)
+  const nodes = useMemo(() => storageRecordToNodes(nodesRecord), [nodesRecord])
+  const edges = useMemo(() => storageRecordToEdges(edgesRecord), [edgesRecord])
+
+  const setNodesMutation = useMutation(
+    ({ storage }, updater) => {
+      const nm = storage.get('nodes')
+      const next =
+        typeof updater === 'function' ? updater(liveMapToSortedNodes(nm)) : updater
+      syncNodesLiveMap(nm, next)
+    },
+    [],
+  )
+  const setEdgesMutation = useMutation(
+    ({ storage }, updater) => {
+      const em = storage.get('edges')
+      const next =
+        typeof updater === 'function' ? updater(liveMapToEdges(em)) : updater
+      syncEdgesLiveMap(em, next)
+    },
+    [],
+  )
+  const setNodes = useCallback((u) => setNodesMutation(u), [setNodesMutation])
+  const setEdges = useCallback((u) => setEdgesMutation(u), [setEdgesMutation])
+
+  const commitNodesChange = useMutation(
+    ({ storage }, changes) => {
+      const nm = storage.get('nodes')
+      let n = liveMapToSortedNodes(nm)
+      n = applyNodeChanges(changes, n)
+      syncNodesLiveMap(nm, n)
+    },
+    [],
+  )
+  const commitEdgesChange = useMutation(
+    ({ storage }, changes) => {
+      const em = storage.get('edges')
+      let e = liveMapToEdges(em)
+      e = applyEdgeChanges(changes, e)
+      syncEdgesLiveMap(em, e)
+    },
+    [],
+  )
+  const onNodesChangeCb = useCallback(
+    (c) => commitNodesChange(c),
+    [commitNodesChange],
+  )
+  const onEdgesChangeCb = useCallback(
+    (c) => commitEdgesChange(c),
+    [commitEdgesChange],
+  )
+
+  return (
+    <EditorBody
+      boot={boot}
+      nodes={nodes}
+      edges={edges}
+      setNodes={setNodes}
+      setEdges={setEdges}
+      onNodesChange={onNodesChangeCb}
+      onEdgesChange={onEdgesChangeCb}
+      persistOnGraphChange={false}
+      promptBeforeProjectSwitch
+    />
+  )
+}
+
+export default function App() {
+  return COLLAB_ENABLED ? <CollabEditorApp /> : <LocalEditorApp />
+}
+
