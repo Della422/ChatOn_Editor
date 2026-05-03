@@ -1,21 +1,22 @@
+import { useEffect, useMemo, useRef } from 'react'
 import { MoonStar } from 'lucide-react'
-import {
-  Background,
-  Controls,
-  MiniMap,
-  ReactFlow,
-} from 'reactflow'
-import BranchNode from './components/BranchNode'
-import DialogueNode from './components/DialogueNode'
-import GroupNode from './components/GroupNode'
-import LogicNode from './components/LogicNode'
+import { Background, Controls, MiniMap, ReactFlow, useReactFlow } from 'reactflow'
+import { EDITOR_EDGE_TYPES, EDITOR_NODE_TYPES } from './editorFlowTypes.js'
 import 'reactflow/dist/style.css'
 
-const nodeTypes = {
-  dialogue: DialogueNode,
-  logic: LogicNode,
-  branch: BranchNode,
-  group: GroupNode,
+/** 첫 그래프 로드 시에만 fitView (fitView prop은 노드 갱신마다 재실행되어 렉·선택 깨짐 유발 가능) */
+function OneShotFitView({ ready }) {
+  const { fitView } = useReactFlow()
+  const doneRef = useRef(false)
+  useEffect(() => {
+    if (!ready || doneRef.current) return
+    doneRef.current = true
+    const id = requestAnimationFrame(() => {
+      fitView({ padding: 0.15 })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [ready, fitView])
+  return null
 }
 
 /**
@@ -28,7 +29,6 @@ const nodeTypes = {
  * @param {import('reactflow').NodeDragHandler} props.onNodeDragStop
  * @param {import('reactflow').NodeMouseHandler} props.onNodeClick
  * @param {import('reactflow').OnSelectionChangeFunc} props.onSelectionChange
- * @param {import('reactflow').NodeTypes} [props.nodeTypesOverride]
  * @param {string} props.currentProjectName
  * @param {Array<{ id: string, name: string }>} props.projectList
  * @param {string} props.activeProjectId
@@ -53,7 +53,8 @@ const nodeTypes = {
  * @param {(id: string, listKey: string, rowId: string) => void} props.removeInspectorRow
  * @param {(ids: string[]) => void} props.deleteNodesByIds
  * @param {(ids: string[]) => void} props.deleteEdgesByIds
- * @param {(id: string | null) => void} props.setSelectedNodeId
+ * @param {() => void} props.onClearFlowSelection
+ * @param {(nodeId: string) => void} props.onFocusNodeInInspector
  * @param {{ type: 'node' | 'edge', nodeId?: string, edgeId?: string, x: number, y: number } | null} props.contextMenu
  * @param {(m: null | object) => void} props.setContextMenu
  * @param {string | null} props.toast
@@ -68,7 +69,6 @@ export default function EditorLayout({
   onNodeDragStop,
   onNodeClick,
   onSelectionChange,
-  nodeTypesOverride,
   currentProjectName,
   projectList,
   activeProjectId,
@@ -93,13 +93,51 @@ export default function EditorLayout({
   removeInspectorRow,
   deleteNodesByIds,
   deleteEdgesByIds,
-  setSelectedNodeId,
+  onClearFlowSelection,
+  onFocusNodeInInspector,
   contextMenu,
   setContextMenu,
   toast,
   subtitle = 'Universal Narrative Node Editor',
 }) {
-  const nTypes = nodeTypesOverride ?? nodeTypes
+  const defaultEdgeOptions = useMemo(
+    () => ({
+      animated: true,
+      style: { stroke: '#7b61ff', strokeWidth: 2 },
+    }),
+    [],
+  )
+
+  const minimapNodeColor = useMemo(
+    () => (node) =>
+      node.type === 'group'
+        ? '#5c6b8a'
+        : node.type === 'branch'
+          ? '#c66bff'
+          : node.type === 'logic'
+            ? '#6bb5ff'
+            : node.type === 'event'
+              ? '#e6a23c'
+              : node.type === 'choice'
+                ? '#f06292'
+                : '#6a5acd',
+    [],
+  )
+
+  const minimapStyle = useMemo(
+    () => ({
+      backgroundColor: '#0d0b16',
+      border: '1px solid #30294d',
+    }),
+    [],
+  )
+  const controlsStyle = useMemo(
+    () => ({
+      backgroundColor: '#0d0b16',
+      border: '1px solid #30294d',
+    }),
+    [],
+  )
 
   return (
     <div className="editor-shell">
@@ -144,14 +182,20 @@ export default function EditorLayout({
       </div>
 
       <div className="editor-toolbar">
+        <button type="button" onClick={() => addNodeByType('branch')}>
+          + Branch
+        </button>
         <button type="button" onClick={() => addNodeByType('dialogue')}>
           + Dialogue
         </button>
+        <button type="button" onClick={() => addNodeByType('event')}>
+          + Event
+        </button>
+        <button type="button" onClick={() => addNodeByType('choice')}>
+          + Choice
+        </button>
         <button type="button" onClick={() => addNodeByType('logic')}>
           + Logic
-        </button>
-        <button type="button" onClick={() => addNodeByType('branch')}>
-          + Branch
         </button>
         <button type="button" onClick={() => addNodeByType('group')}>
           + Group
@@ -195,69 +239,61 @@ export default function EditorLayout({
         </button>
       </div>
 
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodeDragStop={onNodeDragStop}
-        onNodeClick={onNodeClick}
-        onSelectionChange={onSelectionChange}
-        onNodeContextMenu={(event, node) => {
-          event.preventDefault()
-          event.stopPropagation()
-          setContextMenu({
-            type: 'node',
-            nodeId: node.id,
-            x: event.clientX,
-            y: event.clientY,
-          })
-        }}
-        onEdgeContextMenu={(event, edge) => {
-          event.preventDefault()
-          event.stopPropagation()
-          setContextMenu({
-            type: 'edge',
-            edgeId: edge.id,
-            x: event.clientX,
-            y: event.clientY,
-          })
-        }}
-        onPaneClick={() => {
-          setContextMenu(null)
-          setSelectedNodeId(null)
-        }}
-        fitView
-        minZoom={0.3}
-        maxZoom={1.8}
-        colorMode="dark"
-        defaultEdgeOptions={{
-          animated: true,
-          style: { stroke: '#7b61ff', strokeWidth: 2 },
-        }}
-      >
-        <Background color="#2f2a45" gap={24} size={1} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={(node) =>
-            node.type === 'group'
-              ? '#5c6b8a'
-              : node.type === 'branch'
-                ? '#c66bff'
-                : node.type === 'logic'
-                  ? '#6bb5ff'
-                  : '#6a5acd'
-          }
-          maskColor="rgba(5, 3, 12, 0.65)"
-          style={{ backgroundColor: '#0d0b16', border: '1px solid #30294d' }}
-        />
-        <Controls
-          style={{ backgroundColor: '#0d0b16', border: '1px solid #30294d' }}
-        />
-      </ReactFlow>
+      <div className="editor-flow">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={EDITOR_NODE_TYPES}
+          edgeTypes={EDITOR_EDGE_TYPES}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeDragStop={onNodeDragStop}
+          onNodeClick={onNodeClick}
+          onSelectionChange={onSelectionChange}
+          onNodeContextMenu={(event, node) => {
+            event.preventDefault()
+            event.stopPropagation()
+            setContextMenu({
+              type: 'node',
+              nodeId: node.id,
+              x: event.clientX,
+              y: event.clientY,
+            })
+          }}
+          onEdgeContextMenu={(event, edge) => {
+            event.preventDefault()
+            event.stopPropagation()
+            setContextMenu({
+              type: 'edge',
+              edgeId: edge.id,
+              x: event.clientX,
+              y: event.clientY,
+            })
+          }}
+          onPaneClick={() => {
+            setContextMenu(null)
+          }}
+          nodesDraggable
+          nodesConnectable
+          nodesFocusable
+          elementsSelectable
+          minZoom={0.3}
+          maxZoom={1.8}
+          defaultEdgeOptions={defaultEdgeOptions}
+        >
+          <OneShotFitView ready={nodes.length > 0} />
+          <Background color="#2f2a45" gap={24} size={1} />
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={minimapNodeColor}
+            maskColor="rgba(5, 3, 12, 0.65)"
+            style={minimapStyle}
+          />
+          <Controls style={controlsStyle} />
+        </ReactFlow>
+      </div>
 
       <aside className={`inspector-panel ${selectedNode ? 'is-open' : ''}`}>
         <h3>Inspector</h3>
@@ -277,7 +313,7 @@ export default function EditorLayout({
               className="inspector-delete-button"
               onClick={() => {
                 deleteNodesByIds([selectedNode.id])
-                setSelectedNodeId(null)
+                onClearFlowSelection()
               }}
             >
               이 노드 삭제
@@ -303,6 +339,14 @@ export default function EditorLayout({
 
             {selectedNode.type === 'dialogue' && (
               <>
+                <label>제목 (메타)</label>
+                <input
+                  value={selectedNode.data.title ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { title: event.target.value })
+                  }
+                  placeholder="노드 라벨"
+                />
                 <label>Character</label>
                 <input
                   value={selectedNode.data.character ?? ''}
@@ -376,8 +420,89 @@ export default function EditorLayout({
               </>
             )}
 
+            {selectedNode.type === 'event' && (
+              <>
+                <label>제목</label>
+                <input
+                  value={selectedNode.data.title ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { title: event.target.value })
+                  }
+                />
+                <label>본문</label>
+                <textarea
+                  rows={5}
+                  value={selectedNode.data.body ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { body: event.target.value })
+                  }
+                />
+              </>
+            )}
+
+            {selectedNode.type === 'choice' && (
+              <>
+                <label>제목</label>
+                <input
+                  value={selectedNode.data.title ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { title: event.target.value })
+                  }
+                />
+                <label>안내 문구</label>
+                <textarea
+                  rows={3}
+                  value={selectedNode.data.body ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { body: event.target.value })
+                  }
+                />
+                <div className="inspector-subtitle">선택지</div>
+                {(selectedNode.data.options ?? []).map((opt) => (
+                  <div key={opt.id} className="inspector-row">
+                    <input
+                      value={opt.label ?? ''}
+                      placeholder="선택 문구"
+                      onChange={(event) =>
+                        updateInspectorRow(
+                          selectedNode.id,
+                          'options',
+                          opt.id,
+                          'label',
+                          event.target.value,
+                        )
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        removeInspectorRow(selectedNode.id, 'options', opt.id)
+                      }
+                    >
+                      삭제
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
+                    addInspectorRow(selectedNode.id, 'options', { label: '' })
+                  }
+                >
+                  + 선택지 추가
+                </button>
+              </>
+            )}
+
             {selectedNode.type === 'logic' && (
               <>
+                <label>제목 (메타)</label>
+                <input
+                  value={selectedNode.data.title ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { title: event.target.value })
+                  }
+                />
                 <div className="inspector-subtitle">Operations</div>
                 {(selectedNode.data.operations ?? []).map((operation) => (
                   <div key={operation.id} className="inspector-row inspector-row--triple">
@@ -450,6 +575,13 @@ export default function EditorLayout({
 
             {selectedNode.type === 'branch' && (
               <>
+                <label>제목 (메타)</label>
+                <input
+                  value={selectedNode.data.title ?? ''}
+                  onChange={(event) =>
+                    mergeNodeData(selectedNode.id, { title: event.target.value })
+                  }
+                />
                 <label>Variable</label>
                 <input
                   value={selectedNode.data.condition?.variable ?? ''}
@@ -522,7 +654,7 @@ export default function EditorLayout({
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation()
-                  setSelectedNodeId(contextMenu.nodeId)
+                  onFocusNodeInInspector(contextMenu.nodeId)
                   setContextMenu(null)
                 }}
               >

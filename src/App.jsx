@@ -6,8 +6,9 @@ import {
   useEdgesState,
   useNodesState,
 } from 'reactflow'
-import { useMutation, useStorage } from '@liveblocks/react/suspense'
+import { useMutation, useStorage } from '@liveblocks/react'
 import EditorLayout from './EditorLayout.jsx'
+import { EditorGraphProvider } from './EditorGraphContext.jsx'
 import {
   getAbsoluteTopLeft,
   resolveGroupReparent,
@@ -26,34 +27,82 @@ import {
   switchActiveProject,
 } from './projectStorage'
 import {
+  ensureGraphStorageMaps,
+  getCollaborationSeedGraph,
   liveMapToEdges,
   liveMapToSortedNodes,
   storageRecordToEdges,
   storageRecordToNodes,
+  repairLiveMapNodesIfNeeded,
   syncEdgesLiveMap,
   syncNodesLiveMap,
 } from './liveblocksFlow'
+import { storageRecordJsonEqual } from './storageEquality.js'
+import { REGISTERED_NODE_TYPE_SET } from './knownNodeTypes.js'
 
 const COLLAB_ENABLED = Boolean(import.meta.env.VITE_LIVEBLOCKS_PUBLIC_KEY?.trim())
+
+/**
+ * 선택 상태는 Liveblocks에 두지 않고 로컬(flowSelected*)로만 병합함.
+ * select 변경까지 storage에 커밋하면 스냅샷→props 갱신→StoreUpdater가 다시 select를
+ * 쏘는 식으로 Maximum update depth 루프가 날 수 있음.
+ * @param {import('reactflow').NodeChange[] | import('reactflow').EdgeChange[]} changes
+ */
+function changesWithoutSelect(changes) {
+  return changes.filter((c) => c.type !== 'select')
+}
 
 function randomId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`
 }
 
+/** node.type·data.kind·UI 프리셋 (버튼별 생성이 항상 올바른 타입을 쓰도록) */
+const NODE_CREATE_PRESETS = {
+  dialogue: { kind: 'dialogue', title: '대사 노드' },
+  logic: { kind: 'logic', title: '로직 노드' },
+  branch: { kind: 'branch', title: '분기 노드' },
+  group: { kind: 'group', title: '그룹' },
+  event: { kind: 'event', title: '이벤트 노드' },
+  choice: { kind: 'choice', title: '선택지 노드' },
+}
+
 function createDefaultData(type, id) {
+  const preset = NODE_CREATE_PRESETS[type] ?? NODE_CREATE_PRESETS.dialogue
+  const kind = preset.kind
+
   if (type === 'logic') {
     return {
       id,
+      kind,
+      title: preset.title,
       operations: [{ id: randomId('op'), variable: '', operator: '=', value: '' }],
     }
   }
   if (type === 'branch') {
-    return { id, condition: { variable: '', operator: '==', value: '' } }
+    return {
+      id,
+      kind,
+      title: preset.title,
+      condition: { variable: '', operator: '==', value: '' },
+    }
   }
   if (type === 'group') {
-    return { id, label: 'New Group' }
+    return { id, kind, title: preset.title, label: 'New Group' }
   }
-  return { id, character: '', text: '', customProperties: [] }
+  if (type === 'event') {
+    return { id, kind, title: preset.title, body: '' }
+  }
+  if (type === 'choice') {
+    return { id, kind, title: preset.title, body: '', options: [] }
+  }
+  return {
+    id,
+    kind,
+    title: preset.title,
+    character: '',
+    text: '',
+    customProperties: [],
+  }
 }
 
 function getBootState() {
@@ -97,6 +146,9 @@ function EditorBody({
   const [activeProjectId, setActiveProjectId] = useState(boot.activeProjectId)
   const [projectList, setProjectList] = useState(boot.projectList)
   const [selectedNodeId, setSelectedNodeId] = useState(null)
+  /** Storage 스냅샷에 selected가 없어 RF 제어 모드에서 선택이 풀리지 않게 로컬로 병합 */
+  const [flowSelectedNodeIds, setFlowSelectedNodeIds] = useState([])
+  const [flowSelectedEdgeIds, setFlowSelectedEdgeIds] = useState([])
   const [contextMenu, setContextMenu] = useState(null)
   const [quickConnectMode, setQuickConnectMode] = useState(false)
   const [quickConnectSourceId, setQuickConnectSourceId] = useState(null)
@@ -107,6 +159,8 @@ function EditorBody({
   const isRestoringRef = useRef(false)
   const prevSnapshotRef = useRef({ nodes: boot.nodes, edges: boot.edges })
   const toastTimerRef = useRef(null)
+  /** onSelectionChange가 같은 선택으로 연속 호출될 때 setState·리렌더 폭주 방지 */
+  const flowSelectionKeyRef = useRef('')
 
   const showToast = useCallback((message) => {
     setToast(message)
@@ -186,14 +240,22 @@ function EditorBody({
   }, [setEdges])
 
   const deleteSelected = useCallback(() => {
-    const selectedNodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
-    const selectedEdgeIds = edges.filter((edge) => edge.selected).map((edge) => edge.id)
-    deleteNodesByIds(selectedNodeIds)
-    deleteEdgesByIds(selectedEdgeIds)
-    if (selectedNodeIds.includes(selectedNodeId)) {
+    if (!flowSelectedNodeIds.length && !flowSelectedEdgeIds.length) return
+    deleteNodesByIds(flowSelectedNodeIds)
+    deleteEdgesByIds(flowSelectedEdgeIds)
+    if (flowSelectedNodeIds.includes(selectedNodeId)) {
       setSelectedNodeId(null)
     }
-  }, [deleteEdgesByIds, deleteNodesByIds, edges, nodes, selectedNodeId])
+    flowSelectionKeyRef.current = ''
+    setFlowSelectedNodeIds([])
+    setFlowSelectedEdgeIds([])
+  }, [
+    deleteEdgesByIds,
+    deleteNodesByIds,
+    flowSelectedEdgeIds,
+    flowSelectedNodeIds,
+    selectedNodeId,
+  ])
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -217,6 +279,9 @@ function EditorBody({
         setEdges(snapshot.edges)
         setContextMenu(null)
         setSelectedNodeId(null)
+        flowSelectionKeyRef.current = ''
+        setFlowSelectedNodeIds([])
+        setFlowSelectedEdgeIds([])
         setQuickConnectSourceId(null)
         showToast('이전 작업으로 되돌렸습니다.')
         return
@@ -243,6 +308,9 @@ function EditorBody({
         setEdges(snapshot.edges)
         setContextMenu(null)
         setSelectedNodeId(null)
+        flowSelectionKeyRef.current = ''
+        setFlowSelectedNodeIds([])
+        setFlowSelectedEdgeIds([])
         setQuickConnectSourceId(null)
         showToast('다시 실행했습니다.')
         return
@@ -250,15 +318,13 @@ function EditorBody({
 
       if (event.metaKey || event.ctrlKey || event.altKey) return
       if (event.key !== 'Delete' && event.key !== 'Backspace') return
-      const selectedNodeIds = nodes.filter((node) => node.selected).map((n) => n.id)
-      const selectedEdgeIds = edges.filter((edge) => edge.selected).map((e) => e.id)
-      if (!selectedNodeIds.length && !selectedEdgeIds.length) return
+      if (!flowSelectedNodeIds.length && !flowSelectedEdgeIds.length) return
       event.preventDefault()
       deleteSelected()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [deleteSelected, edges, nodes, setEdges, setNodes, showToast])
+  }, [deleteSelected, edges, flowSelectedEdgeIds.length, flowSelectedNodeIds.length, nodes, setEdges, setNodes, showToast])
 
   useEffect(() => {
     const close = () => setContextMenu(null)
@@ -268,16 +334,17 @@ function EditorBody({
 
   const addNodeByType = useCallback(
     (type) => {
-      const id = randomId(type)
+      const resolvedType = REGISTERED_NODE_TYPE_SET.has(type) ? type : 'dialogue'
+      const id = randomId(resolvedType)
       const offset = nodes.length % 5
       setNodes((current) => {
         const base = {
           id,
-          type,
+          type: resolvedType,
           position: { x: 220 + offset * 220, y: 220 + offset * 110 },
-          data: createDefaultData(type, id),
+          data: createDefaultData(resolvedType, id),
         }
-        if (type === 'group') {
+        if (resolvedType === 'group') {
           base.position = { x: 80 + offset * 48, y: 320 + offset * 40 }
           base.style = { width: 520, height: 380, zIndex: -1 }
           base.connectable = false
@@ -379,7 +446,53 @@ function EditorBody({
     [nodes, selectedNodeId],
   )
 
+  const nodesForFlow = useMemo(() => {
+    const sel = new Set(flowSelectedNodeIds)
+    return nodes.map((node) =>
+      sel.has(node.id) ? { ...node, selected: true } : { ...node, selected: false },
+    )
+  }, [nodes, flowSelectedNodeIds])
+
+  const edgesForFlow = useMemo(() => {
+    const sel = new Set(flowSelectedEdgeIds)
+    return edges.map((edge) =>
+      sel.has(edge.id) ? { ...edge, selected: true } : { ...edge, selected: false },
+    )
+  }, [edges, flowSelectedEdgeIds])
+
+  const handleFlowSelectionChange = useCallback(
+    ({ nodes: selectedNodes, edges: selectedEdges }) => {
+      const nodeIds = selectedNodes.map((n) => n.id)
+      const edgeIds = selectedEdges.map((e) => e.id)
+      const key = `n:${nodeIds.join(',')}|e:${edgeIds.join(',')}`
+      if (key === flowSelectionKeyRef.current) return
+      flowSelectionKeyRef.current = key
+      setFlowSelectedNodeIds(nodeIds)
+      setFlowSelectedEdgeIds(edgeIds)
+      setSelectedNodeId(selectedNodes[0]?.id ?? null)
+    },
+    [],
+  )
+
+  const clearFlowSelection = useCallback(() => {
+    flowSelectionKeyRef.current = ''
+    setFlowSelectedNodeIds([])
+    setFlowSelectedEdgeIds([])
+    setSelectedNodeId(null)
+  }, [])
+
+  /** 컨텍스트 메뉴 등에서 Inspector만 열 때 RF 선택 링과 맞춤 */
+  const focusNodeInInspector = useCallback((nodeId) => {
+    if (nodeId == null || String(nodeId).trim() === '') return
+    const id = String(nodeId)
+    flowSelectionKeyRef.current = `n:${id}|e:`
+    setFlowSelectedNodeIds([id])
+    setFlowSelectedEdgeIds([])
+    setSelectedNodeId(id)
+  }, [])
+
   const mergeNodeData = useCallback((nodeId, patch) => {
+    if (nodeId == null || String(nodeId).trim() === '') return
     setNodes((current) =>
       current.map((node) =>
         node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node,
@@ -563,14 +676,22 @@ function EditorBody({
           let data
           if (node.type === 'dialogue') {
             data = {
+              kind: node.data?.kind ?? 'dialogue',
+              title: node.data?.title ?? '',
               character: node.data?.character ?? '',
               text: node.data?.text ?? '',
               customProperties: node.data?.customProperties ?? [],
             }
           } else if (node.type === 'logic') {
-            data = { operations: node.data?.operations ?? [] }
+            data = {
+              kind: node.data?.kind ?? 'logic',
+              title: node.data?.title ?? '',
+              operations: node.data?.operations ?? [],
+            }
           } else if (node.type === 'branch') {
             data = {
+              kind: node.data?.kind ?? 'branch',
+              title: node.data?.title ?? '',
               condition: node.data?.condition ?? {
                 variable: '',
                 operator: '==',
@@ -579,9 +700,24 @@ function EditorBody({
             }
           } else if (node.type === 'group') {
             data = {
+              kind: node.data?.kind ?? 'group',
+              title: node.data?.title ?? '',
               label: node.data?.label ?? '',
               width: parseDim(node.style?.width, 520),
               height: parseDim(node.style?.height, 380),
+            }
+          } else if (node.type === 'event') {
+            data = {
+              kind: node.data?.kind ?? 'event',
+              title: node.data?.title ?? '',
+              body: node.data?.body ?? '',
+            }
+          } else if (node.type === 'choice') {
+            data = {
+              kind: node.data?.kind ?? 'choice',
+              title: node.data?.title ?? '',
+              body: node.data?.body ?? '',
+              options: node.data?.options ?? [],
             }
           } else {
             data = {}
@@ -626,56 +762,59 @@ function EditorBody({
   }, [edges, nodes])
 
   return (
-    <EditorLayout
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onConnect={onConnect}
-      onNodeDragStop={handleNodeDragStop}
-      onNodeClick={(event, node) => {
-        if (!quickConnectMode) return
-        event.preventDefault()
-        if (!quickConnectSourceId) {
-          setQuickConnectSourceId(node.id)
-          return
-        }
+    <EditorGraphProvider value={{ mergeNodeData }}>
+      <div className="editor-app-root">
+        <EditorLayout
+          nodes={nodesForFlow}
+          edges={edgesForFlow}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeDragStop={handleNodeDragStop}
+          onNodeClick={(event, node) => {
+            if (!quickConnectMode) return
+            event.preventDefault()
+            if (!quickConnectSourceId) {
+              setQuickConnectSourceId(node.id)
+              return
+            }
 
-        quickConnectNodes(quickConnectSourceId, node.id)
-        setQuickConnectSourceId(node.id)
-      }}
-      onSelectionChange={({ nodes: selectedNodes }) => {
-        setSelectedNodeId(selectedNodes[0]?.id ?? null)
-      }}
-      currentProjectName={currentProjectName}
-      projectList={projectList}
-      activeProjectId={activeProjectId}
-      onSwitchProject={switchToProject}
-      onNewProject={handleNewProject}
-      onRenameProject={handleRenameProject}
-      onDuplicateProject={handleDuplicateProject}
-      onDeleteProject={handleDeleteProject}
-      addNodeByType={addNodeByType}
-      quickConnectMode={quickConnectMode}
-      setQuickConnectMode={setQuickConnectMode}
-      branchConnectPath={branchConnectPath}
-      setBranchConnectPath={setBranchConnectPath}
-      quickConnectSourceId={quickConnectSourceId}
-      setQuickConnectSourceId={setQuickConnectSourceId}
-      deleteSelected={deleteSelected}
-      downloadJson={downloadJson}
-      selectedNode={selectedNode}
-      mergeNodeData={mergeNodeData}
-      addInspectorRow={addInspectorRow}
-      updateInspectorRow={updateInspectorRow}
-      removeInspectorRow={removeInspectorRow}
-      deleteNodesByIds={deleteNodesByIds}
-      deleteEdgesByIds={deleteEdgesByIds}
-      setSelectedNodeId={setSelectedNodeId}
-      contextMenu={contextMenu}
-      setContextMenu={setContextMenu}
-      toast={toast}
-    />
+            quickConnectNodes(quickConnectSourceId, node.id)
+            setQuickConnectSourceId(node.id)
+          }}
+          onSelectionChange={handleFlowSelectionChange}
+          currentProjectName={currentProjectName}
+          projectList={projectList}
+          activeProjectId={activeProjectId}
+          onSwitchProject={switchToProject}
+          onNewProject={handleNewProject}
+          onRenameProject={handleRenameProject}
+          onDuplicateProject={handleDuplicateProject}
+          onDeleteProject={handleDeleteProject}
+          addNodeByType={addNodeByType}
+          quickConnectMode={quickConnectMode}
+          setQuickConnectMode={setQuickConnectMode}
+          branchConnectPath={branchConnectPath}
+          setBranchConnectPath={setBranchConnectPath}
+          quickConnectSourceId={quickConnectSourceId}
+          setQuickConnectSourceId={setQuickConnectSourceId}
+          deleteSelected={deleteSelected}
+          downloadJson={downloadJson}
+          selectedNode={selectedNode}
+          mergeNodeData={mergeNodeData}
+          addInspectorRow={addInspectorRow}
+          updateInspectorRow={updateInspectorRow}
+          removeInspectorRow={removeInspectorRow}
+          deleteNodesByIds={deleteNodesByIds}
+          deleteEdgesByIds={deleteEdgesByIds}
+          onClearFlowSelection={clearFlowSelection}
+          onFocusNodeInInspector={focusNodeInInspector}
+          contextMenu={contextMenu}
+          setContextMenu={setContextMenu}
+          toast={toast}
+        />
+      </div>
+    </EditorGraphProvider>
   )
 }
 
@@ -700,14 +839,32 @@ function LocalEditorApp() {
 
 function CollabEditorApp() {
   const [boot] = useState(() => getBootState())
-  const nodesRecord = useStorage((root) => root.nodes)
-  const edgesRecord = useStorage((root) => root.edges)
-  const nodes = useMemo(() => storageRecordToNodes(nodesRecord), [nodesRecord])
-  const edges = useMemo(() => storageRecordToEdges(edgesRecord), [edgesRecord])
+  /** 스토리지 로드 여부(스냅샷 null) */
+  const storageRoot = useStorage((root) => root)
+  /**
+   * nodes / edges를 각각 구독해 LiveMap 내부 변경이 항상 React로 전달되게 함.
+   * (루트 객체만 선택하는 방식은 환경에 따라 갱신이 누락될 수 있음)
+   */
+  const storageNodesRecord = useStorage(
+    (root) => root?.nodes ?? null,
+    storageRecordJsonEqual,
+  )
+  const storageEdgesRecord = useStorage(
+    (root) => root?.edges ?? null,
+    storageRecordJsonEqual,
+  )
+  const nodes = useMemo(
+    () => storageRecordToNodes(storageNodesRecord ?? undefined),
+    [storageNodesRecord],
+  )
+  const edges = useMemo(
+    () => storageRecordToEdges(storageEdgesRecord ?? undefined),
+    [storageEdgesRecord],
+  )
 
   const setNodesMutation = useMutation(
     ({ storage }, updater) => {
-      const nm = storage.get('nodes')
+      const { nodes: nm } = ensureGraphStorageMaps(storage)
       const next =
         typeof updater === 'function' ? updater(liveMapToSortedNodes(nm)) : updater
       syncNodesLiveMap(nm, next)
@@ -716,7 +873,7 @@ function CollabEditorApp() {
   )
   const setEdgesMutation = useMutation(
     ({ storage }, updater) => {
-      const em = storage.get('edges')
+      const { edges: em } = ensureGraphStorageMaps(storage)
       const next =
         typeof updater === 'function' ? updater(liveMapToEdges(em)) : updater
       syncEdgesLiveMap(em, next)
@@ -728,7 +885,7 @@ function CollabEditorApp() {
 
   const commitNodesChange = useMutation(
     ({ storage }, changes) => {
-      const nm = storage.get('nodes')
+      const { nodes: nm } = ensureGraphStorageMaps(storage)
       let n = liveMapToSortedNodes(nm)
       n = applyNodeChanges(changes, n)
       syncNodesLiveMap(nm, n)
@@ -737,7 +894,7 @@ function CollabEditorApp() {
   )
   const commitEdgesChange = useMutation(
     ({ storage }, changes) => {
-      const em = storage.get('edges')
+      const { edges: em } = ensureGraphStorageMaps(storage)
       let e = liveMapToEdges(em)
       e = applyEdgeChanges(changes, e)
       syncEdgesLiveMap(em, e)
@@ -745,13 +902,76 @@ function CollabEditorApp() {
     [],
   )
   const onNodesChangeCb = useCallback(
-    (c) => commitNodesChange(c),
+    (changes) => {
+      const next = changesWithoutSelect(changes)
+      if (next.length === 0) return
+      commitNodesChange(next)
+    },
     [commitNodesChange],
   )
   const onEdgesChangeCb = useCallback(
-    (c) => commitEdgesChange(c),
+    (changes) => {
+      const next = changesWithoutSelect(changes)
+      if (next.length === 0) return
+      commitEdgesChange(next)
+    },
     [commitEdgesChange],
   )
+
+  /** 노드·엣지 LiveMap이 모두 비어 있을 때만 샘플 그래프 시드 (기존 룸 데이터 덮어쓰기 금지) */
+  const seedEmptyRoomGraph = useMutation(({ storage }) => {
+    const { nodes: nm, edges: em } = ensureGraphStorageMaps(storage)
+    if (liveMapToSortedNodes(nm).length > 0 || liveMapToEdges(em).length > 0) {
+      return
+    }
+    const { nodes: seedNodes, edges: seedEdges } = getCollaborationSeedGraph()
+    syncNodesLiveMap(nm, seedNodes)
+    syncEdgesLiveMap(em, seedEdges)
+  }, [])
+
+  /** 깨진 position만 storage에 반영(내용 동일하면 mutation noop에 가깝게) */
+  const repairStorageNodes = useMutation(({ storage }) => {
+    repairLiveMapNodesIfNeeded(storage)
+  }, [])
+
+  const seedOnceRef = useRef(false)
+  useEffect(() => {
+    if (storageRoot === null) return
+    if (seedOnceRef.current) return
+    seedOnceRef.current = true
+    seedEmptyRoomGraph()
+    repairStorageNodes()
+  }, [storageRoot, seedEmptyRoomGraph, repairStorageNodes])
+
+  /**
+   * storageRoot === null: 룸 스토리지가 아직 로드되지 않음.
+   * 이 시점에 useMutation으로 storage에 접근하면 Liveblocks가
+   * "storage has been loaded" 오류를 던져 모든 편집이 실패함.
+   */
+  if (storageRoot === null) {
+    return (
+      <div
+        role="status"
+        style={{
+          display: 'grid',
+          placeItems: 'center',
+          minHeight: '60vh',
+          padding: 24,
+          color: '#d8d0ff',
+          fontFamily: 'system-ui, sans-serif',
+          textAlign: 'center',
+          lineHeight: 1.6,
+        }}
+      >
+        <div>
+          <p style={{ margin: 0, fontSize: 16 }}>협업 저장소를 불러오는 중…</p>
+          <p style={{ margin: '12px 0 0', fontSize: 13, opacity: 0.75 }}>
+            준비되면 노드 편집·동기화가 가능합니다.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <EditorBody

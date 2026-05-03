@@ -1,21 +1,24 @@
 import { useCallback } from 'react'
-import { Handle, Position, useReactFlow } from 'reactflow'
+import { Handle, Position } from 'reactflow'
+import { useEditorGraph } from '../EditorGraphContext.jsx'
+import { NODE_INNER_STOP_PROPAGATION, withNoDragNoPan } from '../nodeCanvasInputProps.js'
 
-function DialogueNode({ data }) {
-  const { updateNodeData } = useReactFlow()
+function DialogueNode({ id, data }) {
+  const { mergeNodeData } = useEditorGraph()
+  const nodeId = id ?? data.id
 
   const handleCharacterChange = useCallback(
     (event) => {
-      updateNodeData(data.id, { character: event.target.value })
+      mergeNodeData(nodeId, { character: event.target.value })
     },
-    [data.id, updateNodeData],
+    [nodeId, mergeNodeData],
   )
 
   const handleTextChange = useCallback(
     (event) => {
-      updateNodeData(data.id, { text: event.target.value })
+      mergeNodeData(nodeId, { text: event.target.value })
     },
-    [data.id, updateNodeData],
+    [nodeId, mergeNodeData],
   )
 
   const addProperty = useCallback(() => {
@@ -25,17 +28,17 @@ function DialogueNode({ data }) {
       key: '',
       value: '',
     })
-    updateNodeData(data.id, { customProperties: next })
-  }, [data.customProperties, data.id, updateNodeData])
+    mergeNodeData(nodeId, { customProperties: next })
+  }, [data.customProperties, nodeId, mergeNodeData])
 
   const removeProperty = useCallback(
     (propertyId) => {
       const next = (data.customProperties ?? []).filter(
         (property) => property.id !== propertyId,
       )
-      updateNodeData(data.id, { customProperties: next })
+      mergeNodeData(nodeId, { customProperties: next })
     },
-    [data.customProperties, data.id, updateNodeData],
+    [data.customProperties, nodeId, mergeNodeData],
   )
 
   const updateProperty = useCallback(
@@ -43,9 +46,9 @@ function DialogueNode({ data }) {
       const next = (data.customProperties ?? []).map((property) =>
         property.id === propertyId ? { ...property, [field]: value } : property,
       )
-      updateNodeData(data.id, { customProperties: next })
+      mergeNodeData(nodeId, { customProperties: next })
     },
-    [data.customProperties, data.id, updateNodeData],
+    [data.customProperties, nodeId, mergeNodeData],
   )
 
   return (
@@ -58,24 +61,26 @@ function DialogueNode({ data }) {
 
       <div className="dialogue-node__header">DIALOGUE</div>
 
-      <label className="dialogue-node__label" htmlFor={`character-${data.id}`}>
+      <label className="dialogue-node__label" htmlFor={`character-${nodeId}`}>
         Character
       </label>
       <input
-        id={`character-${data.id}`}
-        className="dialogue-node__input"
+        {...NODE_INNER_STOP_PROPAGATION}
+        id={`character-${nodeId}`}
+        className={withNoDragNoPan('dialogue-node__input')}
         type="text"
         value={data.character ?? ''}
         onChange={handleCharacterChange}
         placeholder="발화자"
       />
 
-      <label className="dialogue-node__label" htmlFor={`text-${data.id}`}>
+      <label className="dialogue-node__label" htmlFor={`text-${nodeId}`}>
         Text
       </label>
       <textarea
-        id={`text-${data.id}`}
-        className="dialogue-node__textarea"
+        {...NODE_INNER_STOP_PROPAGATION}
+        id={`text-${nodeId}`}
+        className={withNoDragNoPan('dialogue-node__textarea')}
         value={data.text ?? ''}
         onChange={handleTextChange}
         placeholder="대사를 입력하세요..."
@@ -83,14 +88,20 @@ function DialogueNode({ data }) {
       />
 
       <div className="dialogue-node__subheader">Custom Properties</div>
-      <button type="button" className="node-mini-button" onClick={addProperty}>
+      <button
+        type="button"
+        {...NODE_INNER_STOP_PROPAGATION}
+        className={withNoDragNoPan('node-mini-button')}
+        onClick={addProperty}
+      >
         + 커스텀 속성 추가
       </button>
       <div className="node-list">
         {(data.customProperties ?? []).map((property) => (
           <div key={property.id} className="node-list-row">
             <input
-              className="dialogue-node__input"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('dialogue-node__input')}
               type="text"
               value={property.key ?? ''}
               onChange={(event) =>
@@ -99,7 +110,8 @@ function DialogueNode({ data }) {
               placeholder="Key"
             />
             <input
-              className="dialogue-node__input"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('dialogue-node__input')}
               type="text"
               value={property.value ?? ''}
               onChange={(event) =>
@@ -109,7 +121,8 @@ function DialogueNode({ data }) {
             />
             <button
               type="button"
-              className="node-mini-button node-mini-button--danger"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('node-mini-button node-mini-button--danger')}
               onClick={() => removeProperty(property.id)}
             >
               삭제

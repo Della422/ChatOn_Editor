@@ -6,6 +6,8 @@ export const initialNodes = [
     position: { x: 220, y: 120 },
     data: {
       id: 'dialogue-1',
+      kind: 'dialogue',
+      title: '대사 노드',
       character: 'Guide',
       text: '여긴 어떤 게임에도 붙일 수 있는 범용 내러티브 에디터야.',
       customProperties: [],
@@ -17,6 +19,8 @@ export const initialNodes = [
     position: { x: 560, y: 120 },
     data: {
       id: 'logic-1',
+      kind: 'logic',
+      title: '로직 노드',
       operations: [
         { id: 'op-1', variable: 'Trust', operator: '+=', value: '1' },
         { id: 'op-2', variable: 'HasKey', operator: '=', value: 'True' },
@@ -29,6 +33,8 @@ export const initialNodes = [
     position: { x: 900, y: 120 },
     data: {
       id: 'branch-1',
+      kind: 'branch',
+      title: '분기 노드',
       condition: { variable: 'Trust', operator: '>=', value: '3' },
     },
   },
@@ -38,6 +44,8 @@ export const initialNodes = [
     position: { x: 1260, y: 40 },
     data: {
       id: 'dialogue-2',
+      kind: 'dialogue',
+      title: '대사 노드',
       character: 'Companion',
       text: '우리를 믿어도 좋아. 정문으로 들어가자.',
       customProperties: [{ id: 'prop-1', key: 'Emotion', value: 'Calm' }],
@@ -49,6 +57,8 @@ export const initialNodes = [
     position: { x: 1260, y: 260 },
     data: {
       id: 'dialogue-3',
+      kind: 'dialogue',
+      title: '대사 노드',
       character: 'Narrator',
       text: '문은 닫혀 있었다. 다른 경로를 찾아야 한다.',
       customProperties: [{ id: 'prop-2', key: 'SFX', value: 'LockedDoor' }],

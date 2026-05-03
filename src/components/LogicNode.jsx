@@ -1,8 +1,11 @@
 import { useCallback } from 'react'
-import { Handle, Position, useReactFlow } from 'reactflow'
+import { Handle, Position } from 'reactflow'
+import { useEditorGraph } from '../EditorGraphContext.jsx'
+import { NODE_INNER_STOP_PROPAGATION, withNoDragNoPan } from '../nodeCanvasInputProps.js'
 
-function LogicNode({ data }) {
-  const { updateNodeData } = useReactFlow()
+function LogicNode({ id, data }) {
+  const { mergeNodeData } = useEditorGraph()
+  const nodeId = id ?? data.id
 
   const addOperation = useCallback(() => {
     const next = [...(data.operations ?? [])]
@@ -12,17 +15,17 @@ function LogicNode({ data }) {
       operator: '=',
       value: '',
     })
-    updateNodeData(data.id, { operations: next })
-  }, [data.id, data.operations, updateNodeData])
+    mergeNodeData(nodeId, { operations: next })
+  }, [nodeId, data.operations, mergeNodeData])
 
   const updateOperation = useCallback(
     (operationId, field, value) => {
       const next = (data.operations ?? []).map((operation) =>
         operation.id === operationId ? { ...operation, [field]: value } : operation,
       )
-      updateNodeData(data.id, { operations: next })
+      mergeNodeData(nodeId, { operations: next })
     },
-    [data.id, data.operations, updateNodeData],
+    [nodeId, data.operations, mergeNodeData],
   )
 
   const removeOperation = useCallback(
@@ -30,23 +33,29 @@ function LogicNode({ data }) {
       const next = (data.operations ?? []).filter(
         (operation) => operation.id !== operationId,
       )
-      updateNodeData(data.id, { operations: next })
+      mergeNodeData(nodeId, { operations: next })
     },
-    [data.id, data.operations, updateNodeData],
+    [nodeId, data.operations, mergeNodeData],
   )
 
   return (
     <div className="logic-node">
       <Handle type="target" position={Position.Left} className="dialogue-node__handle" />
       <div className="dialogue-node__header">LOGIC</div>
-      <button type="button" className="node-mini-button" onClick={addOperation}>
+      <button
+        type="button"
+        {...NODE_INNER_STOP_PROPAGATION}
+        className={withNoDragNoPan('node-mini-button')}
+        onClick={addOperation}
+      >
         + 변수 연산 추가
       </button>
       <div className="node-list">
         {(data.operations ?? []).map((operation) => (
           <div key={operation.id} className="node-list-row">
             <input
-              className="dialogue-node__input"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('dialogue-node__input')}
               value={operation.variable ?? ''}
               onChange={(event) =>
                 updateOperation(operation.id, 'variable', event.target.value)
@@ -54,7 +63,8 @@ function LogicNode({ data }) {
               placeholder="변수명"
             />
             <select
-              className="dialogue-node__input"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('dialogue-node__input')}
               value={operation.operator ?? '='}
               onChange={(event) =>
                 updateOperation(operation.id, 'operator', event.target.value)
@@ -65,7 +75,8 @@ function LogicNode({ data }) {
               <option value="-=">-=</option>
             </select>
             <input
-              className="dialogue-node__input"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('dialogue-node__input')}
               value={operation.value ?? ''}
               onChange={(event) =>
                 updateOperation(operation.id, 'value', event.target.value)
@@ -74,7 +85,8 @@ function LogicNode({ data }) {
             />
             <button
               type="button"
-              className="node-mini-button node-mini-button--danger"
+              {...NODE_INNER_STOP_PROPAGATION}
+              className={withNoDragNoPan('node-mini-button node-mini-button--danger')}
               onClick={() => removeOperation(operation.id)}
             >
               삭제

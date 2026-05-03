@@ -21,6 +21,31 @@ body,
   margin: 0;
 }
 
+/* React Flow #004: 에디터까지 flex 높이가 이어지도록 */
+.app-root-layout {
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-root-layout__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-app-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 body {
   overflow: hidden;
   background:
@@ -32,7 +57,27 @@ body {
 .editor-shell {
   position: relative;
   width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* React Flow #004: 캔버스 영역이 실제 높이를 갖도록 flex로 채움 */
+.editor-flow {
+  flex: 1 1 auto;
+  min-height: 280px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+}
+
+.editor-flow .react-flow {
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
 }
 
 .editor-title {
@@ -292,7 +337,9 @@ body {
 
 .dialogue-node,
 .logic-node,
-.branch-node {
+.branch-node,
+.event-node,
+.choice-node {
   width: 280px;
   padding: 12px;
   border: 1px solid #4a4a4a;
@@ -301,6 +348,24 @@ body {
   box-shadow: 0 0 0 1px rgba(150, 255, 150, 0.08), 0 8px 20px rgba(0, 0, 0, 0.4);
   color: #d8ffd8;
   font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.event-node {
+  box-shadow: 0 0 0 1px rgba(230, 162, 60, 0.2), 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.event-node .dialogue-node__header {
+  color: #ffc978;
+  border-color: #5c4a2a;
+}
+
+.choice-node {
+  box-shadow: 0 0 0 1px rgba(240, 98, 146, 0.22), 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.choice-node .dialogue-node__header {
+  color: #ff9ec8;
+  border-color: #5c3048;
 }
 
 .dialogue-node__header {
@@ -439,10 +504,13 @@ body {
   padding: 16px 14px;
   color: #d6d2eb;
   overflow-y: auto;
+  /* 닫힌 상태에서도 투명 레이어가 캔버스 클릭/드래그를 가로채지 않도록 */
+  pointer-events: none;
 }
 
 .inspector-panel.is-open {
   transform: translateX(0);
+  pointer-events: auto;
 }
 
 .inspector-panel h3 {

@@ -1,28 +1,32 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { LiveMap } from '@liveblocks/client'
-import { ClientSideSuspense, LiveblocksProvider, RoomProvider } from '@liveblocks/react/suspense'
+import { LiveblocksProvider, RoomProvider } from '@liveblocks/react'
 import './index.css'
 import App from './App.jsx'
-import { getRoomIdFromUrl } from './roomId.js'
+import { LiveblocksConnectionBanner } from './LiveblocksConnectionBanner.jsx'
+import { LiveblocksErrorBoundary } from './LiveblocksErrorBoundary.jsx'
+import { DEFAULT_LIVEBLOCKS_ROOM_ID, getRoomIdFromUrl } from './roomId.js'
 
-const liveblocksPublicKey = import.meta.env.VITE_LIVEBLOCKS_PUBLIC_KEY?.trim() ?? ''
-const roomId = getRoomIdFromUrl()
+const publicKeyRaw = import.meta.env.VITE_LIVEBLOCKS_PUBLIC_KEY
+const liveblocksPublicKey =
+  typeof publicKeyRaw === 'string' ? publicKeyRaw.trim() : ''
 
-const suspenseFallback = (
-  <div
-    style={{
-      display: 'grid',
-      placeItems: 'center',
-      minHeight: '100vh',
-      background: '#07050f',
-      color: '#d8d0ff',
-      fontFamily: 'system-ui, sans-serif',
-    }}
-  >
-    Loading room…
-  </div>
-)
+let roomId = getRoomIdFromUrl()
+if (typeof roomId !== 'string' || roomId.trim() === '') {
+  roomId = DEFAULT_LIVEBLOCKS_ROOM_ID
+} else {
+  roomId = roomId.trim()
+}
+
+if (import.meta.env.DEV) {
+  console.log('Liveblocks key exists:', Boolean(liveblocksPublicKey))
+  console.log(
+    'Liveblocks key prefix:',
+    liveblocksPublicKey ? liveblocksPublicKey.slice(0, 8) : '(empty)',
+  )
+  console.log('roomId:', roomId)
+}
 
 const missingKeyBanner =
   liveblocksPublicKey === '' ? (
@@ -40,39 +44,37 @@ const missingKeyBanner =
         lineHeight: 1.5,
       }}
     >
-      <strong>Liveblocks Public Key가 설정되지 않았습니다.</strong> 동시 편집(공유
-      룸)은 비활성화되며 로컬 편집만 사용됩니다. 프로젝트 루트에{' '}
-      <code style={{ color: '#c4b5fd' }}>.env.local</code> 파일을 만들고{' '}
-      <code style={{ color: '#c4b5fd' }}>.env.example</code>을 참고해{' '}
-      <code style={{ color: '#c4b5fd' }}>VITE_LIVEBLOCKS_PUBLIC_KEY</code>를 넣은 뒤{' '}
-      개발 서버를 다시 시작하세요.
+      Liveblocks Public Key가 설정되지 않았습니다. .env.local에
+      VITE_LIVEBLOCKS_PUBLIC_KEY를 추가하고 npm run dev를 다시 실행하세요.
     </div>
   ) : null
 
 const editorRoot =
   liveblocksPublicKey !== '' ? (
     <LiveblocksProvider publicApiKey={liveblocksPublicKey}>
-      <ClientSideSuspense fallback={suspenseFallback}>
-        <RoomProvider
-          id={roomId}
-          initialPresence={{ cursor: null }}
-          initialStorage={{
-            nodes: new LiveMap(),
-            edges: new LiveMap(),
-          }}
-        >
-          <App />
-        </RoomProvider>
-      </ClientSideSuspense>
+      <RoomProvider
+        id={roomId}
+        initialPresence={{ cursor: null }}
+        initialStorage={{
+          nodes: new LiveMap(),
+          edges: new LiveMap(),
+        }}
+      >
+        <LiveblocksErrorBoundary>
+          <LiveblocksConnectionBanner>
+            <App />
+          </LiveblocksConnectionBanner>
+        </LiveblocksErrorBoundary>
+      </RoomProvider>
     </LiveblocksProvider>
   ) : (
     <App />
   )
 
 const rootTree = (
-  <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+  <div className="app-root-layout">
     {missingKeyBanner}
-    <div style={{ flex: 1, minHeight: 0 }}>{editorRoot}</div>
+    <div className="app-root-layout__main">{editorRoot}</div>
   </div>
 )
 

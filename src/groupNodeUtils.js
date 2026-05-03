@@ -14,14 +14,18 @@ export function parseDim(val, fallback) {
  * @param {Map<string, import('reactflow').Node>} byId
  */
 export function getAbsoluteTopLeft(node, byId) {
-  let x = node.position.x
-  let y = node.position.y
+  let x = Number(node.position?.x ?? 0)
+  let y = Number(node.position?.y ?? 0)
+  if (!Number.isFinite(x)) x = 0
+  if (!Number.isFinite(y)) y = 0
   let current = node
   while (current.parentNode) {
     const p = byId.get(current.parentNode)
     if (!p) break
-    x += p.position.x
-    y += p.position.y
+    const px = Number(p.position?.x ?? 0)
+    const py = Number(p.position?.y ?? 0)
+    x += Number.isFinite(px) ? px : 0
+    y += Number.isFinite(py) ? py : 0
     current = p
   }
   return { x, y }
@@ -36,6 +40,8 @@ export function estimateNodeSize(node) {
     }
   }
   if (node.type === 'dialogue') return { w: 280, h: 420 }
+  if (node.type === 'event') return { w: 280, h: 320 }
+  if (node.type === 'choice') return { w: 280, h: 380 }
   if (node.type === 'logic') return { w: 280, h: 240 }
   if (node.type === 'branch') return { w: 280, h: 260 }
   return { w: 200, h: 120 }
@@ -43,7 +49,19 @@ export function estimateNodeSize(node) {
 
 /** React Flow 권장: 부모 노드가 항상 자식보다 앞에 오도록 정렬 */
 export function sortNodesParentsBeforeChildren(nodes) {
-  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const resolved = []
+  for (const n of nodes) {
+    if (!n) continue
+    const raw = n.id ?? n.data?.id
+    if (raw == null || String(raw).trim() === '') continue
+    const id = String(raw).trim()
+    const data =
+      n.data != null && typeof n.data === 'object'
+        ? { ...n.data, id }
+        : n.data
+    resolved.push({ ...n, id, data })
+  }
+  const byId = new Map(resolved.map((n) => [n.id, n]))
   const done = new Set()
   const out = []
 
@@ -57,7 +75,7 @@ export function sortNodesParentsBeforeChildren(nodes) {
     out.push(n)
   }
 
-  for (const n of nodes) {
+  for (const n of resolved) {
     emit(n)
   }
   return out

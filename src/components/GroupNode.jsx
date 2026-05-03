@@ -1,14 +1,16 @@
 import { memo, useCallback } from 'react'
-import { NodeResizer, useReactFlow } from 'reactflow'
+import { NodeResizer } from 'reactflow'
+import { useEditorGraph } from '../EditorGraphContext.jsx'
+import { NODE_INNER_STOP_PROPAGATION, withNoDragNoPan } from '../nodeCanvasInputProps.js'
 
 function GroupNode({ id, data, selected }) {
-  const { updateNodeData } = useReactFlow()
+  const { mergeNodeData } = useEditorGraph()
 
   const onLabelChange = useCallback(
     (event) => {
-      updateNodeData(id, { label: event.target.value })
+      mergeNodeData(id, { label: event.target.value })
     },
-    [id, updateNodeData],
+    [id, mergeNodeData],
   )
 
   return (
@@ -23,12 +25,12 @@ function GroupNode({ id, data, selected }) {
       <div className="group-node__header">
         <span className="group-node__badge">GROUP</span>
         <input
-          className="group-node__title-input"
+          {...NODE_INNER_STOP_PROPAGATION}
+          className={withNoDragNoPan('group-node__title-input')}
           type="text"
           value={data.label ?? ''}
           onChange={onLabelChange}
           placeholder="Scene / Chapter 이름"
-          onPointerDown={(e) => e.stopPropagation()}
         />
       </div>
     </div>

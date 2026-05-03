@@ -1,8 +1,11 @@
 import { useCallback } from 'react'
-import { Handle, Position, useReactFlow } from 'reactflow'
+import { Handle, Position } from 'reactflow'
+import { useEditorGraph } from '../EditorGraphContext.jsx'
+import { NODE_INNER_STOP_PROPAGATION, withNoDragNoPan } from '../nodeCanvasInputProps.js'
 
-function BranchNode({ data }) {
-  const { updateNodeData } = useReactFlow()
+function BranchNode({ id, data }) {
+  const { mergeNodeData } = useEditorGraph()
+  const nodeId = id ?? data.id
   const condition = data.condition ?? {
     variable: '',
     operator: '==',
@@ -11,14 +14,14 @@ function BranchNode({ data }) {
 
   const updateCondition = useCallback(
     (field, value) => {
-      updateNodeData(data.id, {
+      mergeNodeData(nodeId, {
         condition: {
           ...condition,
           [field]: value,
         },
       })
     },
-    [condition, data.id, updateNodeData],
+    [condition, nodeId, mergeNodeData],
   )
 
   return (
@@ -28,13 +31,15 @@ function BranchNode({ data }) {
       <label className="dialogue-node__label">Condition</label>
       <div className="node-list-row node-list-row--inline">
         <input
-          className="dialogue-node__input"
+          {...NODE_INNER_STOP_PROPAGATION}
+          className={withNoDragNoPan('dialogue-node__input')}
           value={condition.variable ?? ''}
           onChange={(event) => updateCondition('variable', event.target.value)}
           placeholder="변수명"
         />
         <select
-          className="dialogue-node__input"
+          {...NODE_INNER_STOP_PROPAGATION}
+          className={withNoDragNoPan('dialogue-node__input')}
           value={condition.operator ?? '=='}
           onChange={(event) => updateCondition('operator', event.target.value)}
         >
@@ -44,7 +49,8 @@ function BranchNode({ data }) {
           <option value="<=">{'<='}</option>
         </select>
         <input
-          className="dialogue-node__input"
+          {...NODE_INNER_STOP_PROPAGATION}
+          className={withNoDragNoPan('dialogue-node__input')}
           value={condition.value ?? ''}
           onChange={(event) => updateCondition('value', event.target.value)}
           placeholder="값"
