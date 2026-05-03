@@ -10,6 +10,10 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+
+# Env — 실제 키는 커밋하지 마세요 (.env.local 등은 아래 *.local 에 포함)
+.env
+!.env.example
 *.local
 
 # Editor directories and files
